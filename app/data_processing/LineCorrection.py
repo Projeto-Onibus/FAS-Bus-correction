@@ -24,7 +24,7 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
     Description:
         Gets all of bus data and corrects each bus' line column based on results from FilterData
     Required Configurations:
-        CONFIGS['lineCorrection']['limit'] - The minimun value to consider a set of points as a valid group
+        CONFIGS['line_correction']['limit'] - The minimun value to consider a set of points as a valid group
     """
 
     # Listagem com todos os conjuntos linha-ônibus detectados. Série contendo tuplas (<linha>,<sentido>,<onibus>)
@@ -45,9 +45,9 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
         for line in lines:
             lineMap = torch.tensor(linesMatrix[lineList.index(line)])
             lineMap = lineMap[~torch.any(lineMap.isnan(), dim=1)]
-            distanceMatrix = torch.sigmoid(int(CONFIGS["lineCorrection"]["distanceTolerance"]) - haversine(busMap, lineMap))
+            distanceMatrix = torch.sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - haversine(busMap, lineMap))
             belongingArray = torch.round(torch.max(distanceMatrix, dim=1)[0])
-            belongingArray = CorrectLine(belongingArray, CONFIGS['lineCorrection']['limit'])
+            belongingArray = CorrectLine(belongingArray, CONFIGS['default_correction_method']['limit'])
             linesToCompare += [belongingArray]
         belongingMatrix = torch.stack(linesToCompare)
 
@@ -81,7 +81,7 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
             # Para evitar flutuações que possam surgir nesse processo os arrays de pertencimento de linha
             # passam novamente pela função CorrectLine()
             for line in range(len(belongingMatrix)):
-                belongingMatrix[line] = CorrectLine(belongingMatrix[line], CONFIGS['lineCorrection']['limit'])
+                belongingMatrix[line] = CorrectLine(belongingMatrix[line], CONFIGS['default_correction_method']['limit'])
             correctedData += [[lines[i] for i in torch.max(belongingMatrix, dim=0)[1]]]
         else:
             correctedData += [[lines[i] for i in torch.max(belongingMatrix, dim=0)[1]]]
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     from time import time
 
     CONFIGS = configparser.ConfigParser()
-    CONFIGS['lineCorrection'] = {'limit': '3', 'distanceTolerance': '300'}
+    CONFIGS['line_correction'] = {'limit': '3', 'distanceTolerance': '300'}
     CONFIGS['lineDetection'] = {'distanceTolerance': 300}
 
     # Teste sanidade

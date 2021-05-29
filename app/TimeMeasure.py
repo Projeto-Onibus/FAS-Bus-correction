@@ -1,5 +1,11 @@
 import time
 
+
+# Class to hold performance and measure execution time 
+# 
+# TODO: Use destructor to save progress in case of raised exception
+#
+
 class Measure:
     def __init__(self):
         self.times = dict()
@@ -36,3 +42,8 @@ class Measure:
         for key,_ in self.times.items():
             res += f"\t{key}: {self.measure(key)}" + (" FORCED" if self.times[key]['forced'] else "") + "\n"
         return res
+
+    def __del__(self):
+        for item in  self.times.keys():
+            if item['end'] is None:
+                self.end(item)

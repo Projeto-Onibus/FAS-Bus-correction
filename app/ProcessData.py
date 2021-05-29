@@ -16,8 +16,9 @@ import json
 import time
 import pickle
 import signal
-import logging
 import datetime
+import argparse
+import pathlib
 from getopt import getopt
 from configparser import ConfigParser
 
@@ -27,43 +28,19 @@ import psycopg2 as dblib
 
 from data_processing import LineCorrection, LineDetection
 from TimeMeasure import Measure
+from logger import logger
 
-# TODO: Remove global variables implementation, use logging
-performanceData = dict()
-mes = Measure()
 
-# def print_to_string(*args, **kwargs):
-#     output = io.StringIO()
-#     print(*args, file=output, **kwargs)
-#     contents = output.getvalue()
-#     output.close()
-#     return contents
-
-# def GracefulExit(signal,term):
-#     global performanceData,mes
-#     performanceData['time'] = print_to_string(mes)
-#     with open("tmp/perfdata.json",'w') as fil:
-#         json.dump(performanceData,fil)
-#     exit(0)
-
-#
 def main():
     # --------------------------------
     # Setup phase
     # --------------------------------
+    performanceData = dict()
+    mes = Measure()
 
     # Parse configurations and parameters, sets logger and global variables
     CONFIGS = ConfigParser()
-    log = logging
-    global performanceData,mes
     
-    # TODO: use argparse to beter handle cli interaction
-    for filename in [i for i in os.listdir() if i[-4:] == ".ini"]:
-        CONFIGS.read(filename)
-    smallOpts = ['o:']
-    bigopts = ["bus-filter=","line-filter=","desired-date=","options-file=","stop-when="]
-    options, _ = getopt(sys.argv[1:],smallOpts,bigopts)
-
     # TODO: Remove this comment when assured it's not needed anymore
     # CONFIGS['lineDetection']['busStepSize'] = '5'
     # CONFIGS['lineDetection']['lineStepSize'] = '5'
@@ -76,24 +53,45 @@ def main():
     lineFilter = None
     desiredDate = None
 
-    for option in options:
-        if option[0] == "-o" or option[0] == "--options-file":
-            CONFIGS.read(option[1])
-        elif option[0] == '--bus-filter':
-            with open(option[1],'r') as fi:
-                busFilter = [i for i in fi.read().split(",") if len(i)>0]
-        elif option[0] == '--line-filter':
-            with open(option[1],'r') as fi:
-                lineFilter = [i for i in fi.read().split(",") if len(i)>0]
-        elif option[0] == '--desired-date':
-                desiredDate = datetime.datetime.strptime(option[1],"%Y-%m-%d")
+    parser = argparse.ArgumentParser(description="Trajectory classifier with GPU acceleration. Classifies long bus paths by line.")
+
+    parser.add_argument('-c','--config',default=None,type=pathlib.Path,help="New configuration path. Overrides default path.")
+    parser.add_argument("-d","-date",type=datetime.date.fromisoformat,default=None,help="(YYYY-MM-DD) Date to query bus paths")
+    parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
+    parser.add_argument("-v",'--verbose',action="count",default=0,help="Increase output verbosity")
+
+    args = parser.parse_args()
+
+    # Sets logging details
+    log = logger(args.verbose)
+
+    # sets configuration options
+    configPath = pathlib.Path("/var/secrets")
+    if (configPath / 'main.conf').exists():
+            CONFIGS.read(configPath / 'main.conf')
+
+    if args.config:
+        if not args.config.exists():
+            log.critical(f"Configuration file at {args.config.absolute()} does not exits")
+            exit(1)
+        CONFIGS.read(args.config)
+
+    # Get execution parameters
+    desiredDate = args.date
+    lineFilter = args.line_whitelist
+    busFilter = args.bus_whitelist
 
     if not desiredDate:
-        logging.critical("No filters or desired date")
+        log.critical("No filters or desired date")
         exit(1)
 
-    if not busFilter and not lineFilter:
-        raise Exception("Too much to handle")
+    if not args.everything and (lineFilter is None and busFilter is None):
+        log.critical("No filters where set and -e option was not set. Program will not operate on all the data unless explicitly said so.")
+        exit(1)
     
     # ------------------------------------------------------------------------
     # Data acquisition
@@ -106,7 +104,6 @@ def main():
     database = dblib.connect(**CONFIGS['database'])
 
     # Getting both bus and lines Ids as lists, ordered by size
-    mes.start("get-lists")
     # Bus Ids
     with database.cursor() as cursor:
             cursor.execute(f"SELECT bus_id,COUNT(time_detection) AS points FROM bus_data WHERE time_detection BETWEEN %s::timestamp AND %s::timestamp GROUP BY bus_id ORDER BY points DESC",(desiredDate,nextDate))
@@ -118,9 +115,7 @@ def main():
             cursor.execute("SELECT line_id,direction,COUNT(position) as dist FROM line_data_simple GROUP BY line_id,direction ORDER BY dist DESC")
             lineSizeListComplete = cursor.fetchall()
     lineMaxSize = lineSizeListComplete[0][2]
-    mes.end("get-lists")
 
-    mes.start("get-bus-data")
     # Buses and lines Tables creation and filter processing
     busMatrix = None # R3 matrix of bus x lat x lon
     busTimestamps = dict()
@@ -147,8 +142,6 @@ def main():
         else:
             busMatrix = np.concatenate([busMatrix,currentBusPath],axis=0)
 
-    mes.end("get-bus-data")
-    mes.start("get-line-data")
 
     lineMatrix = None 
     lineSizeList = list()
@@ -173,7 +166,6 @@ def main():
     if lineMatrix is None or busMatrix is None:
         raise Exception("Line or Bus match no bus")
     
-    mes.end("get-line-data")
     mes.end("data-acquisition")
 
     # -------------------
@@ -222,7 +214,7 @@ def main():
     mes.start("line-detection")
 
     mes.start("line-detection-function")
-    detectionMatrix = LineDetection.FilterData(busMatrix,lineMatrix,busSizeList,lineSizeList,CONFIGS,logging)
+    detectionMatrix = LineDetection.FilterData(busMatrix,lineMatrix,busSizeList,lineSizeList,CONFIGS,log)
     mes.end("line-detection-function")
     
     mes.start('line-detection-saving')
@@ -255,7 +247,7 @@ def main():
     mes.start('database-insertion')
     # Update bus table
     databaseInsert = list()
-    for position, currentBusIndex in enumerate(busResultTable.columns):
+    for _, currentBusIndex in enumerate(busResultTable.columns):
         currentBusTimeDetection = busTimestamps[currentBusIndex]
         currentBusCorrectionResult = busResultTable[currentBusIndex]
         databaseInsert += [(currentBusTimeDetection[i],currentBusIndex,currentBusCorrectionResult[i],currentBusIndex) for i in range(len(currentBusTimeDetection))]
@@ -272,4 +264,16 @@ def main():
     
     
 if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description="Bus trajectory classifier with GPU acceleration")
+
+    parser.add_argument('-c','--config',type=pathlib.Path,help="New configuration path. Overrides default path.")
+    parser.add_argument("-d","-date",type=datetime.date.fromisoformat,help="(YYYY-MM-DD) Date to query bus paths")
+    parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
+    parser.add_argument("")
     main()
+    

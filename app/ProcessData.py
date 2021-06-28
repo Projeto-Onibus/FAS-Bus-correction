@@ -56,18 +56,20 @@ def main():
     parser = argparse.ArgumentParser(description="Trajectory classifier with GPU acceleration. Classifies long bus paths by line.")
 
     parser.add_argument('-c','--config',default=None,type=pathlib.Path,help="New configuration path. Overrides default path.")
-    parser.add_argument("-d","-date",type=datetime.date.fromisoformat,default=None,help="(YYYY-MM-DD) Date to query bus paths")
+    parser.add_argument("-d","--date",type=datetime.date.fromisoformat,default=None,help="(YYYY-MM-DD) Date to query bus paths")
     parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
     parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
     parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
     parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
     parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
     parser.add_argument("-v",'--verbose',action="count",default=0,help="Increase output verbosity")
-
+    parser.add_argument("--status",action="store_true",help="Checks integrity, database connection and exits")
     args = parser.parse_args()
 
     # Sets logging details
     log = logger(args.verbose)
+
+    argsReturned = vars(args).keys()
 
     # sets configuration options
     configPath = pathlib.Path("/var/secrets")
@@ -81,18 +83,19 @@ def main():
         CONFIGS.read(args.config)
 
     # Get execution parameters
-    desiredDate = args.date
-    lineFilter = args.line_whitelist
-    busFilter = args.bus_whitelist
-
     if not desiredDate:
-        log.critical("No filters or desired date")
+        log.critical("No desired date")
         exit(1)
 
     if not args.everything and (lineFilter is None and busFilter is None):
         log.critical("No filters where set and -e option was not set. Program will not operate on all the data unless explicitly said so.")
         exit(1)
-    
+
+    desiredDate = args.date    
+    lineFilter = args.line_whitelist if "line_whitelist" in argsReturned else None
+    busFilter = args.bus_whitelist if "bus_whitelist" in argsReturned else None
+
+
     # ------------------------------------------------------------------------
     # Data acquisition
     # ------------------------------------------------------------------------
@@ -102,6 +105,10 @@ def main():
     
     # Starting database connection
     database = dblib.connect(**CONFIGS['database'])
+
+    if args.status:
+        print("Status: OK")
+        exit(0)
 
     # Getting both bus and lines Ids as lists, ordered by size
     # Bus Ids
@@ -265,15 +272,15 @@ def main():
     
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser(description="Bus trajectory classifier with GPU acceleration")
+    # parser = argparse.ArgumentParser(description="Bus trajectory classifier with GPU acceleration")
 
-    parser.add_argument('-c','--config',type=pathlib.Path,help="New configuration path. Overrides default path.")
-    parser.add_argument("-d","-date",type=datetime.date.fromisoformat,help="(YYYY-MM-DD) Date to query bus paths")
-    parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
-    parser.add_argument("")
+    # parser.add_argument('-c','--config',type=pathlib.Path,help="New configuration path. Overrides default path.")
+    # parser.add_argument("-d","-date",type=datetime.date.fromisoformat,help="(YYYY-MM-DD) Date to query bus paths")
+    # parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    # parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
+    # parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    # parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
+    # parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
+    # parser.add_argument("")
     main()
     

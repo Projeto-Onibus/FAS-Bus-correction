@@ -8,7 +8,7 @@ import logging
 
 import pandas as pd
 import numpy as np
-import torch
+
 
 def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFIGS):
     """

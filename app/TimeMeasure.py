@@ -45,5 +45,5 @@ class Measure:
 
     def __del__(self):
         for item in  self.times.keys():
-            if item['end'] is None:
+            if not "end" in self.times[item]:
                 self.end(item)

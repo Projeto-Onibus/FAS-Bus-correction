@@ -1,7 +1,5 @@
-import numpy as np 
 import cupy as cp
 import pandas as pd
-import torch as tr
 
 # TODO: ENVIAR TODA A MATRIZ PRA GPU E RETIRAR OS RESULTADOS POR LOOP
 

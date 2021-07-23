@@ -29,7 +29,7 @@ RUN mkdir /app /filters
 
 VOLUME ['/app','/filters']
 
-WORKDIR 
+WORKDIR /app
 
 CMD ['bash']
 

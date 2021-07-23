@@ -82,6 +82,8 @@ def main():
             exit(1)
         CONFIGS.read(args.config)
 
+    desiredDate = args.date    
+
     # Get execution parameters
     if not desiredDate:
         log.critical("No desired date")
@@ -91,7 +93,6 @@ def main():
         log.critical("No filters where set and -e option was not set. Program will not operate on all the data unless explicitly said so.")
         exit(1)
 
-    desiredDate = args.date    
     lineFilter = args.line_whitelist if "line_whitelist" in argsReturned else None
     busFilter = args.bus_whitelist if "bus_whitelist" in argsReturned else None
 

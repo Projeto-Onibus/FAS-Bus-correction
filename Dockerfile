@@ -27,11 +27,11 @@ FROM base AS environment
 
 RUN mkdir /app /filters
 
-VOLUME ['/app','/filters']
+VOLUME [ "/app" , "/filters" ]
 
 WORKDIR /app
 
-CMD ['bash']
+CMD ["/bin/bash"]
 
 
 #
@@ -42,13 +42,13 @@ FROM base as test
 
 COPY ./app/ /app/
 
-VOLUME ['/filters']
-
 COPY ./tests/ /tests/
+
+VOLUME ["/filters"]
 
 WORKDIR /tests
 
-CMD ['python3','main_test.py']
+CMD ["python3","main_test.py"]
 
 #
 # Production container
@@ -58,7 +58,7 @@ FROM base as production
 
 RUN mkdir /filters
 
-VOLUME ['/filters']
+VOLUME ["/filters"]
 
 COPY ./app/ /app/
 

@@ -1,0 +1,4 @@
+# Everything after # are treated as comments
+# Write in this file all lines that are to be REMOVED from the correction procedure
+# Be careful if using simoutaneously with whitelists
+# Order of operations: (1º) whitelisting (2º) blacklisting 

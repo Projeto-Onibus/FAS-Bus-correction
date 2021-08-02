@@ -12,12 +12,8 @@
 import os
 import io
 import sys
-import json
-import time
 import pickle
-import signal
 import datetime
-import argparse
 import pathlib
 from getopt import getopt
 from configparser import ConfigParser
@@ -27,9 +23,9 @@ import pandas as pd
 import psycopg2 as dblib
 
 from data_processing import LineCorrection, LineDetection
-from TimeMeasure import Measure
-from logger import logger
-
+from utils.TimeMeasure import Measure
+from utils.logger import logger
+from utils.Parser import parse_args
 
 def main():
     # --------------------------------
@@ -40,31 +36,12 @@ def main():
 
     # Parse configurations and parameters, sets logger and global variables
     CONFIGS = ConfigParser()
-    
-    # TODO: Remove this comment when assured it's not needed anymore
-    # CONFIGS['lineDetection']['busStepSize'] = '5'
-    # CONFIGS['lineDetection']['lineStepSize'] = '5'
-    # CONFIGS['lineDetection']['distanceTolerance'] = '300'
-    # CONFIGS['lineDetection']['detectionPercentage'] = '0.9'
-    # CONFIGS.add_section('lineCorrection')
-    # CONFIGS['lineCorrection']['limit'] = '3'
 
     busFilter = None
     lineFilter = None
     desiredDate = None
 
-    parser = argparse.ArgumentParser(description="Trajectory classifier with GPU acceleration. Classifies long bus paths by line.")
-
-    parser.add_argument('-c','--config',default=None,type=pathlib.Path,help="New configuration path. Overrides default path.")
-    parser.add_argument("-d","--date",type=datetime.date.fromisoformat,default=None,help="(YYYY-MM-DD) Date to query bus paths")
-    parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
-    parser.add_argument("-v",'--verbose',action="count",default=0,help="Increase output verbosity")
-    parser.add_argument("--status",action="store_true",help="Checks integrity, database connection and exits")
-    args = parser.parse_args()
+    args = parse_args()
 
     # Sets logging details
     log = logger(args.verbose)
@@ -72,9 +49,9 @@ def main():
     argsReturned = vars(args).keys()
 
     # sets configuration options
-    configPath = pathlib.Path("/var/secrets")
-    if (configPath / 'main.conf').exists():
-            CONFIGS.read(configPath / 'main.conf')
+    configPath = pathlib.Path("/run/secrets")
+    if (configPath / 'main_configurations').exists():
+            CONFIGS.read(configPath / 'main_configurations')
 
     if args.config:
         if not args.config.exists():
@@ -93,8 +70,8 @@ def main():
         log.critical("No filters where set and -e option was not set. Program will not operate on all the data unless explicitly said so.")
         exit(1)
 
-    lineFilter = args.line_whitelist if "line_whitelist" in argsReturned else None
-    busFilter = args.bus_whitelist if "bus_whitelist" in argsReturned else None
+    # lineFilter = args.line_whitelist if "line_whitelist" in argsReturned else None
+    # busFilter = args.bus_whitelist if "bus_whitelist" in argsReturned else None
 
 
     # ------------------------------------------------------------------------
@@ -116,65 +93,90 @@ def main():
     with database.cursor() as cursor:
             cursor.execute(f"SELECT bus_id,COUNT(time_detection) AS points FROM bus_data WHERE time_detection BETWEEN %s::timestamp AND %s::timestamp GROUP BY bus_id ORDER BY points DESC",(desiredDate,nextDate))
             busSizeListComplete = cursor.fetchall()
+
+    if len(busSizeListComplete) == 0:
+        raise Exception(f"No buses in database at desired date {desiredDate}")
+
     busMaxSize = busSizeListComplete[0][1]
     
     # line Ids
     with database.cursor() as cursor:
-            cursor.execute("SELECT line_id,direction,COUNT(position) as dist FROM line_data_simple GROUP BY line_id,direction ORDER BY dist DESC")
+            cursor.execute("SELECT line_id,direction,COUNT(position) as dist FROM line_data GROUP BY line_id,direction ORDER BY dist DESC")
             lineSizeListComplete = cursor.fetchall()
+
+    if (lineSizeListComplete) == 0:
+        raise Exception("No lines in database")
     lineMaxSize = lineSizeListComplete[0][2]
 
-    # Buses and lines Tables creation and filter processing
-    busMatrix = None # R3 matrix of bus x lat x lon
-    busTimestamps = dict()
-    busSizeList = list()
-
-    # TODO: Poorly implemented, should be 1 request with filters sent
-    for busId,size in busSizeListComplete:
-        if busFilter:
-            if not busId in busFilter:
-                continue
-        busSizeList += [(busId,size)]
-        with database.cursor() as cursor:
-            cursor.execute("""SELECT time_detection,latitude,longitude FROM bus_data 
-                WHERE bus_id=%s AND time_detection BETWEEN %s AND %s  ORDER BY time_detection""",(busId,desiredDate,nextDate))
-            queryResults = cursor.fetchall()
-        curTime = [ (i[0]) for i in queryResults ]
-        busTimestamps[busId] = curTime
-        currentBusPath = np.array([ (i[1],i[2]) for i in queryResults ])
-        currentBusPath = np.pad(currentBusPath,((0,busMaxSize - len(currentBusPath)),(0,0)),constant_values=np.nan)
-        currentBusPath = np.expand_dims(currentBusPath,axis=0)
-            
-        if busMatrix is None:
-            busMatrix = np.copy(currentBusPath)
-        else:
-            busMatrix = np.concatenate([busMatrix,currentBusPath],axis=0)
-
-
-    lineMatrix = None 
-    lineSizeList = list()
-    for lineId,direction,size in lineSizeListComplete:
-        if lineFilter:
-            if not lineId in lineFilter:
-                continue
-        lineSizeList += [(lineId,direction,size)]
-        with database.cursor() as cursor:
-            cursor.execute("""SELECT latitude,longitude FROM line_data_simple 
-                WHERE line_id=%s AND direction=%s""",(lineId,direction))
-            currentLinePath = np.array(cursor.fetchall())
-            currentLinePath = np.pad(currentLinePath,((0,lineMaxSize - len(currentLinePath)),(0,0)),constant_values=np.nan)
-            currentLinePath = np.expand_dims(currentLinePath,axis=0)
-
-        if lineMatrix is None:
-            lineMatrix = np.copy(currentLinePath)
-        else:
-            lineMatrix = np.concatenate([lineMatrix,currentLinePath],axis=0)
-
-
-    if lineMatrix is None or busMatrix is None:
-        raise Exception("Line or Bus match no bus")
+    # Filtering based on whitelists and blacklists
+    with open(args.line_whitelist_path,"r") as lineWhitelistFile:
+        lineWhitelist = set([i for i in lineWhitelistFile.read().split("\n") if len(i) > 0 and i[0] != '#'])
+    with open(args.line_blacklist_path,"r") as lineBlacklistFile:
+        lineBlacklist = set([i for i in lineBlacklistFile.read().split("\n") if len(i) > 0 and i[0] != '#'])
+    with open(args.bus_whitelist_path,"r") as busWhitelistFile:
+        busWhitelist = set([i for i in busWhitelistFile.read().split("\n") if len(i) > 0 and i[0] != '#'])
+    with open(args.bus_blacklist_path,"r") as busBlacklistFile:
+        busBlacklist = set([i for i in busBlacklistFile.read().split("\n") if len(i) > 0 and i[0] != '#'])
     
+
+    lineSet = set([i[0] for i in lineSizeListComplete]).union(lineWhitelist).difference(lineBlacklist)
+    busSet = set([i[0] for i in busSizeListComplete]).union(busWhitelist).difference(busBlacklist)
+
+    busSizeList = [i for i in busSizeListComplete if i[0] in busSet]
+    lineSizeList = [i for i in lineSizeListComplete if i[0] in lineSet]
+
+
+    # Buses and lines Tables creation
+    busMatrix = np.full((len(busSizeList),busSizeList[0][1],2),np.nan) # R3 matrix of bus x maxSize x lat/lon
+    busTimestamps = dict() #dict of lists of timestamps of each entry of a certain bus indexed by bus_id    
+    with database.cursor() as cursor:
+        cursor.execute(""" 
+        SELECT 
+            bus_id,time_detection,latitude,longitude,line_reported 
+        FROM bus_data 
+        WHERE 
+            bus_id IN %s 
+            AND time_detection BETWEEN %s AND %s  
+        ORDER BY bus_id, time_detection """, (
+            tuple([i[0] for i in busSizeList]),
+            desiredDate,nextDate
+            )
+        )
+        busTable = pd.DataFrame(cursor.fetchall(),columns=['bus_id','time_detection','lat','lon','reported'])
+    
+    busTable = busTable.sort_values(["bus_id","time_detection"]).copy()
+
+    for index,busInfo in enumerate(busSizeList):
+        busId,busSize = busInfo
+        busTimestamps[busId] = list(busTable.loc[busTable['bus_id'] == busId]['time_detection'])
+        busTrajectoryArray = np.array(busTable.loc[busTable["bus_id"] == busId][["lat","lon"]])
+        busMatrix[index] = np.pad(busTrajectoryArray,((0,busSizeList[0][1] - busSize),(0,0)),constant_values=np.nan)
+
+    lineMatrix = np.full((len(lineSizeList),lineSizeList[0][2],2),np.nan)
+    with database.cursor() as cursor:
+        cursor.execute("""
+            SELECT 
+                line_id,direction,latitude,longitude
+            FROM line_data
+            WHERE 
+                line_id IN %s 
+            ORDER BY position;
+            """,(
+                tuple([i[0] for i in lineSizeList])
+            ,)
+        )
+        lineTable = pd.DataFrame(cursor.fetchall(),columns=['line_id','direction','lat','lon'])
+
+    for index,lineInfo in enumerate(lineSizeList):
+        lineId, lineDirection, lineSize = lineInfo
+        lineTrajectoryArray = np.array(lineTable.loc[(lineTable["line_id"] == lineId) & (lineTable['direction'] == str(lineDirection))][["lat","lon"]])
+        lineMatrix[index] = np.pad(lineTrajectoryArray,((0,lineSizeList[0][2] - lineSize),(0,0)),constant_values=np.nan)
+ 
+    print(lineMatrix.shape)
+    print(busMatrix.shape)
+
     mes.end("data-acquisition")
+
 
     # -------------------
     # Statistical data and temporary save of files
@@ -193,24 +195,24 @@ def main():
     performanceData['line-wasted-points'] = ((lineMatrix.shape[0]*lineMatrix.shape[1])-performanceData['total-line-coordinates'])
     performanceData['total-size-bus-matrix-mbytes'] = (32*2*busMatrix.shape[0]*busMatrix.shape[1])/(8*10**6)
     performanceData['total-size-line-matrix-mbytes'] = (32*2*lineMatrix.shape[0]*lineMatrix.shape[1])/(8*10**6)
-    performanceData['extrapolated-maximum-d-size-mbytes'] = (32*busMatrix.shape[0]*busMatrix.shape[1]*lineMatrix.shape[0]*lineMatrix.shape[1])/(8*10**6)
-    performanceData['maximum-d-size-batched-mbytes'] = (32*int(CONFIGS['lineDetection']['busStepSize'])*busMatrix.shape[1]*int(CONFIGS['lineDetection']['lineStepSize'])*lineMatrix.shape[1])/(8*10**6)
-    performanceData['iterations-amount'] = (performanceData['bus-amount']/int(CONFIGS['lineDetection']['busStepSize']))*(performanceData['line-amount']/int(CONFIGS['lineDetection']['lineStepSize']))
+    #performanceData['extrapolated-maximum-d-size-mbytes'] = (32*busMatrix.shape[0]*busMatrix.shape[1]*lineMatrix.shape[0]*lineMatrix.shape[1])/(8*10**6)
+    #performanceData['maximum-d-size-batched-mbytes'] = (32*int(CONFIGS['lineDetection']['busStepSize'])*busMatrix.shape[1]*int(CONFIGS['lineDetection']['lineStepSize'])*lineMatrix.shape[1])/(8*10**6)
+    #performanceData['iterations-amount'] = (performanceData['bus-amount']/int(CONFIGS['lineDetection']['busStepSize']))*(performanceData['line-amount']/int(CONFIGS['lineDetection']['lineStepSize']))
     
     # Saving temporary data in case of crash for fast recovery (not implemented yet TODO)
-    with open("tmp/busSizeList.pickle",'wb') as fil:
+    with open("/tmp/busSizeList.pickle",'wb') as fil:
         pickle.dump(busSizeList,fil)
 
-    with open("tmp/lineSizeList.pickle",'wb') as fil:
+    with open("/tmp/lineSizeList.pickle",'wb') as fil:
         pickle.dump(lineSizeList,fil)
 
-    with open("tmp/busMatrix.pickle",'wb') as fil:
+    with open("/tmp/busMatrix.pickle",'wb') as fil:
         pickle.dump(busMatrix,fil)
 
-    with open("tmp/lineMatrix.pickle",'wb') as fil:
+    with open("/tmp/lineMatrix.pickle",'wb') as fil:
         pickle.dump(lineMatrix,fil)
 
-    with open("tmp/busTimestamps.pickle",'wb') as fil:
+    with open("/tmp/busTimestamps.pickle",'wb') as fil:
         pickle.dump(busTimestamps,fil)
 
 
@@ -226,7 +228,7 @@ def main():
     mes.end("line-detection-function")
     
     mes.start('line-detection-saving')
-    with open("tmp/detectMatrix.pickle.tmp",'wb') as fil:
+    with open("/tmp/detectMatrix.pickle.tmp",'wb') as fil:
         pickle.dump(detectionMatrix,fil)
     mes.end("line-detection-saving")
     
@@ -237,51 +239,59 @@ def main():
     mes.start("line-correction")
 
     mes.start('line-correction-function')
-    busResultTable = LineCorrection.CorrectData((detectionMatrix > float(CONFIGS['lineDetection']['detectionPercentage'])),busMatrix,lineMatrix,busSizeList,lineSizeList,CONFIGS) # Matriz R^3 de (entidade x indice)
+    busResultTable = LineCorrection.CorrectData((detectionMatrix > float(CONFIGS['default_correction_method']['detectionPercentage'])),busMatrix,lineMatrix,busSizeList,lineSizeList,CONFIGS) # Matriz R^3 de (entidade x indice)
     mes.end("line-correction-function")
 
     mes.start('line-correction-saving')
-    with open("tmp/busResultTable.pickle.tmp",'wb') as fil:
+    with open("/tmp/busResultTable.pickle.tmp",'wb') as fil:
         pickle.dump(busResultTable,fil)
     mes.end("line-correction-saving")
     
     mes.end("line-correction")
-    
+    print(busResultTable)
     # ----------------------------------------------------------------------------
     # Database saving
     # -----------------------------------------------------------------------------
 
-    # TODO: Change write to DB method, too slow
     mes.start('database-insertion')
-    # Update bus table
-    databaseInsert = list()
-    for _, currentBusIndex in enumerate(busResultTable.columns):
-        currentBusTimeDetection = busTimestamps[currentBusIndex]
-        currentBusCorrectionResult = busResultTable[currentBusIndex]
-        databaseInsert += [(currentBusTimeDetection[i],currentBusIndex,currentBusCorrectionResult[i],currentBusIndex) for i in range(len(currentBusTimeDetection))]
+    if busResultTable.shape[0] == 0:
+        print("Done: NO MATCHES WERE DETECTED")
+        exit(0)
+    # Inserting detected values into corrected places
+    busTable["line_corrected"] = None
+    for index in busResultTable.columns.to_list():
+        busSize = [i[1] for i in busSizeList if i == index][0]
+        busTable.loc[busTable['bus_id'] == index,"line_corrected"] = busResultTable[index].to_list()[:busSize]
+
+    # Deleting original values from bus_data
+    # with database.cursor() as cursor:
+    #     cursor.execute(
+    #         """
+    #         DELETE FROM bus_data
+    #         WHERE
+    #             time_detection BETWEEN %s AND %s
+    #             AND bus_id IN %s
+    #         """,
+    #         (
+    #             desiredDate,nextDate,
+    #             tuple([i[0] for i in busSizeList])
+    #         )
+    #     )
+    # database.commit()
+
+    # inserting new ones in bus_data table
     with database.cursor() as cursor:
-        cursor.executemany("""INSERT INTO 
-            bus_data(time_detection,bus_id,line_key_detected) 
-                VALUES (%s,%s,%s)
-        ON CONFLICT (time_detection,bus_id) DO UPDATE SET line_key_detected = EXCLUDED.line_key_detected
-        WHERE 
-            bus_data.time_detection BETWEEN '2019-05-06' AND '2019-05-07' AND
-            bus_data.bus_id=%s""",databaseInsert)
-        database.commit()
+        cursor.execute("""
+        INSERT INTO bus_data (time_detection, bus_id, latitude, longitude, line_reported, line_detected)
+        VALUES %s
+        """,tuple([tuple(i) for _,i in busTable.iterrows()])            
+        )
+    
+   
+   
     mes.end('database-insertion')
     
     
 if __name__ == '__main__':
-
-    # parser = argparse.ArgumentParser(description="Bus trajectory classifier with GPU acceleration")
-
-    # parser.add_argument('-c','--config',type=pathlib.Path,help="New configuration path. Overrides default path.")
-    # parser.add_argument("-d","-date",type=datetime.date.fromisoformat,help="(YYYY-MM-DD) Date to query bus paths")
-    # parser.add_argument("-b","--bus-whitelist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    # parser.add_argument("-l",'--line-whitelist',type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Only those IDs will be parsed.")
-    # parser.add_argument("--bus-blacklist",type=pathlib.Path,help="Path to bus identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    # parser.add_argument("--line-blacklist",type=pathlib.Path,help="Path to line identifier's whitelist. Either comma or line separated. Those IDs will be excluded from list.")
-    # parser.add_argument("-e","--everything",action="store_true",help="Flag to allow program to process all data without any filter on either bus or lines. Required when no black- or whitelist is given.")
-    # parser.add_argument("")
     main()
     

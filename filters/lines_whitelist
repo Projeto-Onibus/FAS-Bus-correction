@@ -1,0 +1,4 @@
+# Everything after # are treated as comments
+# Write in this file all lines that are to be INSERTED into the correction procedure, excluding all the others
+# Be careful if using simoutaneously with blacklisting
+# Order of operations: (1º) whitelisting (2º) blacklisting 

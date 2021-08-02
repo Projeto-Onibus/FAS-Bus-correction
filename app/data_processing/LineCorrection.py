@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 
+from LineDetection import HaversineLocal
 
 def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFIGS):
     """
@@ -45,7 +46,7 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
         for line in lines:
             lineMap = torch.tensor(linesMatrix[lineList.index(line)])
             lineMap = lineMap[~torch.any(lineMap.isnan(), dim=1)]
-            distanceMatrix = torch.sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - haversine(busMap, lineMap))
+            distanceMatrix = torch.sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - HaversineLocal(busMap, lineMap))
             belongingArray = torch.round(torch.max(distanceMatrix, dim=1)[0])
             belongingArray = CorrectLine(belongingArray, CONFIGS['default_correction_method']['limit'])
             linesToCompare += [belongingArray]
@@ -63,15 +64,21 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
             # uma determinada linha foi detectado
             priorityMatrix = torch.zeros(belongingMatrix.shape[0], conflicts.shape[0])
             for line in range(len(belongingMatrix)):
-                ocurrences, counters = torch.unique_consecutive(belongingMatrix[line], return_counts=True)
-                auxiliarCounters = torch.cumsum(counters, 0)
+                #ocurrences, counters = torch.unique_consecutive(belongingMatrix[line], return_counts=True)
+                ocurrences = LineDetected[np.insert(np.absolute(np.diff(belongingMatrix[line])) > 0.00001, 0, True)]
+                counters = np.diff(np.concatenate(([True],np.absolute(np.diff(belongingMatrix[line])) > 0,[True])).nonzero()[0])
+
+                auxiliarCounters = np.cumsum(counters, 0)
+
                 for conflict in range(conflicts.shape[0]):
                     grupo = torch.where(auxiliarCounters > conflicts[conflict])[0][0].item()
                     priorityMatrix[line][conflict] = counters[grupo] if ocurrences[grupo] == 1 else 0
             
             # As linhas cujo grupo que engloba o ponto de conflito é maior é selecionada para ser feita a substituição
-            _, dominantLines = torch.max(priorityMatrix, dim=0)
-            dominantLines = dominantLines.squeeze(0) if (dominantLines.shape != torch.Size([]) and dominantLines.shape != torch.Size([1])) else dominantLines
+            _, dominantLines = priorityMatrix.max(0)
+            # OU dominantLines = priorityMatrix.max(0)
+
+            dominantLines = np.squeeze(dominantLines,0) if (dominantLines.shape != tuple() and dominantLines.shape != (1,)) else dominantLines
             # Por fim a matriz de pertencimento é atualizada eliminando os conflitos
             for line in range(len(belongingMatrix)):
                 for conflict in range(conflicts.shape[0]):
@@ -82,9 +89,9 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
             # passam novamente pela função CorrectLine()
             for line in range(len(belongingMatrix)):
                 belongingMatrix[line] = CorrectLine(belongingMatrix[line], CONFIGS['default_correction_method']['limit'])
-            correctedData += [[lines[i] for i in torch.max(belongingMatrix, dim=0)[1]]]
+            correctedData += [[lines[i] for i in belongingMatrix.max(0)[1]]]
         else:
-            correctedData += [[lines[i] for i in torch.max(belongingMatrix, dim=0)[1]]]
+            correctedData += [[lines[i] for i in belongingMatrix.max(0)[1]]]
     # Criação de dataframe pandas. matriz de m linhas representando os ônibus e n colunas representando os pontos de ônibus.
     correctedDataframe = pd.DataFrame(correctedData, index=buses_detected)
 
@@ -102,13 +109,17 @@ def CorrectLine(LineDetected, limite):
     
     # Resumimos a quantidade de informação utilizando o método unique_consecutive, criando o tensor ocorrencias com
     # as sequências de grupos e o tensor contadores com o número de ocorrências para o i-ésimo grupo
-    ocorrencias, contadores = torch.unique_consecutive(LineDetected, return_counts=True)
+    #ocorrencias, contadores = torch.unique_consecutive(LineDetected, return_counts=True)
+    ocorrencias = LineDetected[np.insert(np.absolute(np.diff(lineDetected)) > 0.00001, 0, True)]
+    contadores = np.diff(np.concatenate(([True],np.absolute(np.diff(lineDetected)) > 0,[True])).nonzero()[0])
 
     # Array de contador auxiliar para saber onde alterar no array original
-    contadores_auxiliar = torch.cumsum(contadores, 0)
+    contadores_auxiliar = contadores.cumsum()
+    
     # Criar máscara para substituição no array de LineDetected
-    mascara = torch.zeros(contadores_auxiliar[-1], dtype=torch.bool)
-    substituidos = torch.where(contadores < int(limite))[0]
+    mascara = np.zeros(contadores_auxiliar[-1], dtype=torch.bool)
+
+    substituidos = np.where(contadores < int(limite))[0]
     if len(substituidos) != 0:
         for grupo in substituidos:
             if grupo == 0:
@@ -119,39 +130,10 @@ def CorrectLine(LineDetected, limite):
             mascara[inicio:fim] = True
     
     # Eliminar flutuações removendo grupos pequenos
-    linha_Corrigida = torch.where(mascara, torch.logical_not(LineDetected).long(), LineDetected.long())
+    linha_Corrigida = np.where(mascara, np.logical_not(LineDetected).astype("int64"), LineDetected.astype("int64"))
     
     return linha_Corrigida
 
-def haversine(busMap, lineMap):
-    # Detection Algorithm
-
-    # Separate latitudes from longitudes
-    BusMapLat = busMap.select(1,0)
-    BusMapLon = busMap.select(1,1)
-    lineLat = lineMap.select(1,0)
-    lineLon = lineMap.select(1,1)
-
-    # Convert from decimal degrees to radians
-    BusMapLat = torch.deg2rad(BusMapLat)
-    BusMapLon = torch.deg2rad(BusMapLon)
-    lineLat = torch.deg2rad(lineLat)
-    lineLon = torch.deg2rad(lineLon)
-
-    # Transpose Bus coordinates to orthogonal for broadcasting
-    BusMapLat = torch.unsqueeze(BusMapLat, 1)
-    BusMapLon = torch.unsqueeze(BusMapLon, 1)
-    lineLat = torch.unsqueeze(lineLat, 0)
-    lineLon = torch.unsqueeze(lineLon, 0)
-
-    diffLat = BusMapLat - lineLat
-    diffLon = BusMapLon - lineLon
-
-    # Haversine
-    d = (torch.sin(diffLat*0.5)**2 + torch.cos(BusMapLat) * torch.cos(lineLat) * torch.sin(diffLon*0.5)**2)
-    results = 2 * 1000 * 6371.0088 * torch.asin(torch.sqrt(d))
-    
-    return results
 
 if __name__ == "__main__":
     from time import time

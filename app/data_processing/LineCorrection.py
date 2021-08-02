@@ -8,7 +8,11 @@ import logging
 
 import pandas as pd
 import numpy as np
+import cupy as cp
 
+
+def sigmoid(array):
+    return 1 / (1 + cp.exp(-array))
 
 def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFIGS):
     """
@@ -35,33 +39,31 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
     lineList = list(map(lambda x: (x[0]), lineList))
 
     correctedData = []
-    i = 0
     for bus in buses_detected:
-        busMap = torch.tensor(busMatrix[busList.index(bus)])
-        busMap = busMap[~torch.any(busMap.isnan(), dim=1)]                  # Removendo valores NaN no fim do tensor
+        busMap = cp.array(busMatrix[busList.index(bus)])
+        busMap = busMap[~cp.any(cp.isnan(busMap), axis=1)]                  # Removendo valores NaN no fim do tensor
         lines = [i[0] for i in detectionTable[bus].loc[detectionTable[bus] == True].index.unique()]
         linesToCompare = []
-        j = 0
+
         for line in lines:
-            lineMap = torch.tensor(linesMatrix[lineList.index(line)])
-            lineMap = lineMap[~torch.any(lineMap.isnan(), dim=1)]
-            distanceMatrix = torch.sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - haversine(busMap, lineMap))
-            belongingArray = torch.round(torch.max(distanceMatrix, dim=1)[0])
+            lineMap = cp.array(linesMatrix[lineList.index(line)])
+            lineMap = lineMap[~cp.any(cp.isnan(lineMap), axis=1)]
+            distanceMatrix = sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - haversine(busMap, lineMap))
+            belongingArray = cp.round(cp.amax(distanceMatrix, axis=1))
             belongingArray = CorrectLine(belongingArray, CONFIGS['default_correction_method']['limit'])
             linesToCompare += [belongingArray]
-        belongingMatrix = torch.stack(linesToCompare)
+        belongingMatrix = cp.stack(linesToCompare)
 
         # Os pontos em que devemos nos preocupar são aqueles em que há sobreposição nas linhas, e reconhecendo estes pontos
         # podemos determinar o tamanho do grupo que estes pontos pertencem e usar este critério como abordagem para resolver o conflito
-        conflicts = torch.nonzero(torch.sum(belongingMatrix, axis=0) > 1)
-        #conflicts = conflicts.unsqueeze(dim=0) if conflicts.shape == torch.Size([]) else conflicts
+        conflicts = cp.stack(cp.nonzero(cp.sum(belongingMatrix, axis=0) > 1))
 
         if len(conflicts) != 0:
             # Matriz_prioridade consiste em uma matriz de M linhas onde M é o número de linhas de ônibus e N colunas onde N
             # é o número de pontos onde ocorreu conflito
             # A matriz_prioridade é preenchida com o número de pontos no grupo em que o conflito em um determinado ponto para
             # uma determinada linha foi detectado
-            priorityMatrix = torch.zeros(belongingMatrix.shape[0], conflicts.shape[0])
+            priorityMatrix = cp.zeros(belongingMatrix.shape[0], conflicts.shape[0])
             for line in range(len(belongingMatrix)):
                 ocurrences, counters = torch.unique_consecutive(belongingMatrix[line], return_counts=True)
                 auxiliarCounters = torch.cumsum(counters, 0)

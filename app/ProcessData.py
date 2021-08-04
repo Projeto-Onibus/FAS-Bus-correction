@@ -172,8 +172,6 @@ def main():
         lineTrajectoryArray = np.array(lineTable.loc[(lineTable["line_id"] == lineId) & (lineTable['direction'] == str(lineDirection))][["lat","lon"]])
         lineMatrix[index] = np.pad(lineTrajectoryArray,((0,lineSizeList[0][2] - lineSize),(0,0)),constant_values=np.nan)
  
-    print(lineMatrix.shape)
-    print(busMatrix.shape)
 
     mes.end("data-acquisition")
 
@@ -248,7 +246,6 @@ def main():
     mes.end("line-correction-saving")
     
     mes.end("line-correction")
-    print(busResultTable)
     # ----------------------------------------------------------------------------
     # Database saving
     # -----------------------------------------------------------------------------
@@ -257,37 +254,48 @@ def main():
     if busResultTable.shape[0] == 0:
         print("Done: NO MATCHES WERE DETECTED")
         exit(0)
+    
     # Inserting detected values into corrected places
-    busTable["line_corrected"] = None
+    busTable["line_corrected"] = ""
+    print(busTable[['line_corrected']] == None)
     for index in busResultTable.columns.to_list():
-        busSize = [i[1] for i in busSizeList if i == index][0]
+        busSize = [i[1] for i in busSizeList if i[0] == index][0]
         busTable.loc[busTable['bus_id'] == index,"line_corrected"] = busResultTable[index].to_list()[:busSize]
 
-    # Deleting original values from bus_data
-    # with database.cursor() as cursor:
-    #     cursor.execute(
-    #         """
-    #         DELETE FROM bus_data
-    #         WHERE
-    #             time_detection BETWEEN %s AND %s
-    #             AND bus_id IN %s
-    #         """,
-    #         (
-    #             desiredDate,nextDate,
-    #             tuple([i[0] for i in busSizeList])
-    #         )
-    #     )
-    # database.commit()
+    busTable.loc[busTable['line_corrected'] == "","line_corrected"] = "No_line"
 
-    # inserting new ones in bus_data table
-    with database.cursor() as cursor:
-        cursor.execute("""
-        INSERT INTO bus_data (time_detection, bus_id, latitude, longitude, line_reported, line_detected)
-        VALUES %s
-        """,tuple([tuple(i) for _,i in busTable.iterrows()])            
-        )
+    #busTable[['time_detection']] = busTable[['time_detection']].astype("int64") // 10**9
+    busTable['bus_id'] = busTable.bus_id.apply(lambda x: x[1:-1] if x[0] == "'" else x)
+    busTable['reported'] = busTable.reported.apply(lambda x: x[1:-1] if x[0] == "'" else x)
     
-   
+
+    buff = io.StringIO()
+    # inserting new ones in bus_data table
+    busTable = busTable.rename(columns={"lat":"latitude","lon":"longitude","reported":"line_reported","line_corrected":"line_detected"})
+
+    busTable.to_csv(buff,header=False,index=False,columns=("time_detection","bus_id","latitude","longitude","line_reported","line_detected"))
+    buff.seek(0)
+    with database.cursor() as cursor:
+        cursor.copy_from(buff,"bus_data",sep=",")#,columns=("bus_id","time_detection","latitude","longitude","line_reported","line_detected"))
+    database.commit()
+    
+    # Deleting original values from bus_data (identified by none in line_detected column)
+    with database.cursor() as cursor:
+        cursor.execute(
+            """
+            DELETE FROM bus_data
+            WHERE
+                time_detection BETWEEN %s AND %s
+                AND bus_id IN %s AND
+                line_detected = ''
+            """,
+            (
+                desiredDate,nextDate,
+                tuple([i[0] for i in busSizeList])
+            )
+        )
+    database.commit()
+
    
     mes.end('database-insertion')
     

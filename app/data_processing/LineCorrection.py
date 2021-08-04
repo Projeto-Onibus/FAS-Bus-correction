@@ -10,10 +10,10 @@ import pandas as pd
 import numpy as np
 import cupy as cp
 
-from LineDetection import HaversineLocal
+from .LineDetection import HaversineLocal
 
 def sigmoid(array):
-    return 1 / (1 + cp.exp(-array))
+    return 1 / (1 + np.exp(-array))
 
 def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFIGS):
     """
@@ -41,59 +41,63 @@ def CorrectData(detectionTable, busMatrix, linesMatrix, busList, lineList, CONFI
 
     correctedData = []
     for bus in buses_detected:
-        busMap = cp.array(busMatrix[busList.index(bus)])
-        busMap = busMap[~cp.any(cp.isnan(busMap), axis=1)]                  # Removendo valores NaN no fim do tensor
+        busMap = np.array(busMatrix[busList.index(bus)])
+        busMap = busMap[~np.any(np.isnan(busMap), axis=1)]                  # Removendo valores NaN no fim do tensor
         lines = [i[0] for i in detectionTable[bus].loc[detectionTable[bus] == True].index.unique()]
         linesToCompare = []
 
         for line in lines:
-            lineMap = cp.array(linesMatrix[lineList.index(line)])
-            lineMap = lineMap[~cp.any(cp.isnan(lineMap), axis=1)]
-            distanceMatrix = sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) - haversine(busMap, lineMap))
-            belongingArray = cp.round(cp.amax(distanceMatrix, axis=1))
+            lineMap = np.array(linesMatrix[lineList.index(line)])
+            lineMap = lineMap[~np.any(np.isnan(lineMap), axis=1)]
+            distanceMatrix = sigmoid(int(CONFIGS["default_correction_method"]["distanceTolerance"]) 
+                                        - cp.asnumpy(HaversineLocal(cp.asarray(np.expand_dims(busMap,0)), cp.asarray(np.expand_dims(lineMap,0)))[0]))
+            distanceMatrix = np.squeeze(distanceMatrix)
+            belongingArray = np.round(np.amax(distanceMatrix, axis=1))
             belongingArray = CorrectLine(belongingArray, CONFIGS['default_correction_method']['limit'])
             linesToCompare += [belongingArray]
-        belongingMatrix = cp.stack(linesToCompare)
-
+        belongingMatrix = np.stack(linesToCompare)
         # Os pontos em que devemos nos preocupar são aqueles em que há sobreposição nas linhas, e reconhecendo estes pontos
         # podemos determinar o tamanho do grupo que estes pontos pertencem e usar este critério como abordagem para resolver o conflito
-        conflicts = cp.stack(cp.nonzero(cp.sum(belongingMatrix, axis=0) > 1))
+        conflicts = np.stack(np.nonzero(np.sum(belongingMatrix,axis=0) > 1))
 
         if len(conflicts) != 0:
             # Matriz_prioridade consiste em uma matriz de M linhas onde M é o número de linhas de ônibus e N colunas onde N
             # é o número de pontos onde ocorreu conflito
             # A matriz_prioridade é preenchida com o número de pontos no grupo em que o conflito em um determinado ponto para
             # uma determinada linha foi detectado
-            priorityMatrix = cp.zeros(belongingMatrix.shape[0], conflicts.shape[0])
+            priorityMatrix = np.zeros((belongingMatrix.shape[0], conflicts.shape[0]))
             for line in range(len(belongingMatrix)):
                 #ocurrences, counters = torch.unique_consecutive(belongingMatrix[line], return_counts=True)
-                ocurrences = LineDetected[np.insert(np.absolute(np.diff(belongingMatrix[line])) > 0.00001, 0, True)]
+                ocurrences = belongingMatrix[line][np.insert(np.absolute(np.diff(belongingMatrix[line])) > 0.00001, 0, True)]
                 counters = np.diff(np.concatenate(([True],np.absolute(np.diff(belongingMatrix[line])) > 0,[True])).nonzero()[0])
 
                 auxiliarCounters = np.cumsum(counters, 0)
-
                 for conflict in range(conflicts.shape[0]):
-                    grupo = torch.where(auxiliarCounters > conflicts[conflict])[0][0].item()
+                    if len(conflicts[conflict]) == 0:
+                        priorityMatrix[line][conflict] = 0
+                        break
+                    contagemConflitos = np.where(auxiliarCounters > conflicts[conflict])[0]
+                    if len(contagemConflitos) == 0:
+                        priorityMatrix[line][conflict] = 0
+                        break
+                    grupo = contagemConflitos.item()
                     priorityMatrix[line][conflict] = counters[grupo] if ocurrences[grupo] == 1 else 0
             
             # As linhas cujo grupo que engloba o ponto de conflito é maior é selecionada para ser feita a substituição
-            _, dominantLines = priorityMatrix.max(0)
-            # OU dominantLines = priorityMatrix.max(0)
+            #_, dominantLines = priorityMatrix.max(0)
+            dominantLines = priorityMatrix.max(0)
 
-            dominantLines = np.squeeze(dominantLines,0) if (dominantLines.shape != tuple() and dominantLines.shape != (1,)) else dominantLines
+            dominantLines = dominantLines if (dominantLines.shape != tuple() and dominantLines.shape != (1,)) else dominantLines
             # Por fim a matriz de pertencimento é atualizada eliminando os conflitos
             for line in range(len(belongingMatrix)):
                 for conflict in range(conflicts.shape[0]):
                     if line != dominantLines[conflict]:
-                        belongingMatrix[line][conflicts[conflict]] = 0
-            
+                        belongingMatrix[line][0,0,conflicts[conflict]] = 0
             # Para evitar flutuações que possam surgir nesse processo os arrays de pertencimento de linha
             # passam novamente pela função CorrectLine()
             for line in range(len(belongingMatrix)):
                 belongingMatrix[line] = CorrectLine(belongingMatrix[line], CONFIGS['default_correction_method']['limit'])
-            correctedData += [[lines[i] for i in belongingMatrix.max(0)[1]]]
-        else:
-            correctedData += [[lines[i] for i in belongingMatrix.max(0)[1]]]
+        correctedData += [[lines[i] for i in np.where(belongingMatrix == belongingMatrix.max(0))[0]]]
     # Criação de dataframe pandas. matriz de m linhas representando os ônibus e n colunas representando os pontos de ônibus.
     correctedDataframe = pd.DataFrame(correctedData, index=buses_detected)
 
@@ -112,14 +116,14 @@ def CorrectLine(LineDetected, limite):
     # Resumimos a quantidade de informação utilizando o método unique_consecutive, criando o tensor ocorrencias com
     # as sequências de grupos e o tensor contadores com o número de ocorrências para o i-ésimo grupo
     #ocorrencias, contadores = torch.unique_consecutive(LineDetected, return_counts=True)
-    ocorrencias = LineDetected[np.insert(np.absolute(np.diff(lineDetected)) > 0.00001, 0, True)]
-    contadores = np.diff(np.concatenate(([True],np.absolute(np.diff(lineDetected)) > 0,[True])).nonzero()[0])
+    ocorrencias = cp.asnumpy(LineDetected)[np.insert(np.absolute(np.diff(cp.asnumpy(LineDetected))) > 0.00001, 0, True)]
+    contadores = np.diff(np.concatenate(([True],np.absolute(np.diff(cp.asnumpy(LineDetected))) > 0,[True])).nonzero()[0])
 
     # Array de contador auxiliar para saber onde alterar no array original
     contadores_auxiliar = contadores.cumsum()
     
     # Criar máscara para substituição no array de LineDetected
-    mascara = np.zeros(contadores_auxiliar[-1], dtype=torch.bool)
+    mascara = np.zeros((LineDetected.shape[0]), dtype="bool")
 
     substituidos = np.where(contadores < int(limite))[0]
     if len(substituidos) != 0:
@@ -130,9 +134,9 @@ def CorrectLine(LineDetected, limite):
                 inicio = contadores_auxiliar[grupo - 1]
             fim = inicio + contadores[grupo]
             mascara[inicio:fim] = True
-    
+
     # Eliminar flutuações removendo grupos pequenos
-    linha_Corrigida = np.where(mascara, np.logical_not(LineDetected).astype("int64"), LineDetected.astype("int64"))
+    linha_Corrigida = np.where(mascara, np.logical_not(cp.asnumpy(LineDetected)).astype("int64"), cp.asnumpy(LineDetected).astype("int64"))
     
     return linha_Corrigida
 
@@ -141,8 +145,8 @@ if __name__ == "__main__":
     from time import time
 
     CONFIGS = configparser.ConfigParser()
-    CONFIGS['line_correction'] = {'limit': '3', 'distanceTolerance': '300'}
-    CONFIGS['lineDetection'] = {'distanceTolerance': 300}
+    CONFIGS['default_correction_method'] = {'limit': '3', 'distanceTolerance': '300'}
+    
 
     # Teste sanidade
 #    """
@@ -156,8 +160,8 @@ if __name__ == "__main__":
     busList = [(i, 0) for i in "M,N,O".split(",")]
     lineList = [('A','0'), ('B', '0'), ('A', '1')]
 
-    resultado = CorrectData(matrizOnibus, oni, li, busList, lineList, CONFIGS)
     print("antes:\n", matrizOnibus)
+    resultado = CorrectData(matrizOnibus, oni, li, busList, lineList, CONFIGS)
     print("depois:\n", resultado.to_string())
 #    """
 

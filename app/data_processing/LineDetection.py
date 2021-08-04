@@ -50,7 +50,7 @@ def FilterData(matrizOnibusCpu,matrizLinhasCpu,busIdList,lineIdList,CONFIGS,logg
 
 
 def Algorithm(MO,ML,TOLERANCE,detectionPercentage=None,haversine=True):
-    results = HaversineLocal(MO,ML)
+    results,infVector = HaversineLocal(MO,ML,haversine)
     
     # Matriz D^[min]
     resultsMin = cp.nanmin(results,axis=1)
@@ -61,9 +61,9 @@ def Algorithm(MO,ML,TOLERANCE,detectionPercentage=None,haversine=True):
         return resultsPerc > cp.array(detectionPercentage)
     return resultsPerc
 
-def HaversineLocal(busMatrix,lineMatrix):
-    MatrizOnibus = cp.copy(MO)
-    MatrizLinhas = cp.copy(ML)
+def HaversineLocal(busMatrix,lineMatrix,haversine=True):
+    MatrizOnibus = cp.copy(busMatrix)
+    MatrizLinhas = cp.copy(lineMatrix)
 
     MatrizLinhas = cp.dsplit(MatrizLinhas,2)
     MatrizOnibus = cp.dsplit(MatrizOnibus,2)
@@ -90,7 +90,7 @@ def HaversineLocal(busMatrix,lineMatrix):
     else:
         results = cp.sqrt((MatrizOnibus[0]-MatrizLinhas[0])**2+(MatrizOnibus[1]-MatrizLinhas[1])**2)
 
-    return results
+    return results,infVector
 
 
 if __name__ == '__main__':

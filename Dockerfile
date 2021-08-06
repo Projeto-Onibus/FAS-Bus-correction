@@ -64,3 +64,4 @@ COPY ./app/ /app/
 
 WORKDIR /app
 
+CMD ["/bin/bash"]

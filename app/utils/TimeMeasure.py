@@ -7,7 +7,8 @@ import time
 #
 
 class Measure:
-    def __init__(self):
+    def __init__(self, filenameInput):
+        self.filename = filenameInput
         self.times = dict()
         self.times['all'] = { 'start':time.time(),'forced':False}
 
@@ -47,3 +48,5 @@ class Measure:
         for item in  self.times.keys():
             if not "end" in self.times[item]:
                 self.end(item)
+        with open(self.filename,"w") as fil:
+            fil.write(f"{self}")

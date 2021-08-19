@@ -48,13 +48,21 @@ def parse_args():
 	filtering_parser = parser.add_argument_group(title="Filtering inputs",
 	description=""
 	)
-	filtering_parser.add_argument("-b","--blacklist",
+	filtering_parser.add_argument("-bb","--blacklist-buses",
 	action="store_true",
-	help="Enables blacklisting. List read from files."
+	help="Enables blacklisting for buses. List read from files."
 	)
-	filtering_parser.add_argument("-w","--whitelist",
+	filtering_parser.add_argument("-bl","--blacklist-lines",
 	action="store_true",
-	help="Enable whitelisting of bus and lines inputs. List read from files."
+	help="Enables blacklisting for lines. List read from files."
+	)
+	filtering_parser.add_argument("-wb","--whitelist-buses",
+	action="store_true",
+	help="Enable whitelisting of bus inputs. List read from files."
+	)
+	filtering_parser.add_argument("-wl","--whitelist-lines",
+	action="store_true",
+	help="Enable whitelisting of lines inputs. List read from files."
 	)
 	filtering_parser.add_argument("-e","--everything",
 	action="store_true",
